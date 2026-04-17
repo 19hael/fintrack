@@ -1,0 +1,4 @@
+project_id = "fintrack"
+
+[functions.ai-transaction]
+verify_jwt = true

@@ -1,121 +1,78 @@
-import { useState, useEffect } from 'react'
-import { supabase } from '../lib/supabase'
-import { useAuth } from '../hooks/useAuth'
+import { useMemo, useState } from 'react'
 import Modal from '../components/Modal'
 import TransactionForm from '../components/TransactionForm'
 import AIAssistant from '../components/AIAssistant'
+import {
+  useCategories,
+  useTransactions,
+  useDeleteTransaction,
+  useInvalidate,
+  type TransactionFilters,
+} from '../hooks/queries'
+
+const ITEMS_PER_PAGE = 20
+
+const formatCurrency = (amount: number) =>
+  new Intl.NumberFormat('es-CR', {
+    style: 'currency',
+    currency: 'CRC',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  }).format(amount)
+
+function getMonthOptions() {
+  const options: { value: string; label: string }[] = []
+  const now = new Date()
+  for (let i = 0; i < 12; i++) {
+    const date = new Date(now.getFullYear(), now.getMonth() - i, 1)
+    options.push({
+      value: date.toISOString().slice(0, 7),
+      label: date.toLocaleDateString('es-CR', { month: 'long', year: 'numeric' }),
+    })
+  }
+  return options
+}
 
 export default function Transactions() {
-  const { user } = useAuth()
-  const [loading, setLoading] = useState(true)
-  const [transactions, setTransactions] = useState([])
-  const [categories, setCategories] = useState([])
-  const [filters, setFilters] = useState({
+  const [filters, setFilters] = useState<TransactionFilters>({
     month: new Date().toISOString().slice(0, 7),
     category: '',
     type: '',
   })
   const [modalOpen, setModalOpen] = useState(false)
-  const [deleteConfirm, setDeleteConfirm] = useState(null)
+  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
   const [currentPage, setCurrentPage] = useState(1)
-  const itemsPerPage = 20
 
-  useEffect(() => {
-    fetchCategories()
-  }, [user])
+  const categoriesQ = useCategories()
+  const transactionsQ = useTransactions(filters)
+  const deleteTx = useDeleteTransaction()
+  const invalidate = useInvalidate()
 
-  useEffect(() => {
-    fetchTransactions()
-  }, [user, filters])
+  const categories = categoriesQ.data ?? []
+  const transactions = transactionsQ.data ?? []
+  const loading = transactionsQ.isLoading
+  const error = transactionsQ.error
 
-  const fetchCategories = async () => {
-    const { data } = await supabase
-      .from('categories')
-      .select('*')
-      .eq('user_id', user.id)
-      .order('name')
-    setCategories(data || [])
-  }
+  const categoryMap = useMemo(() => {
+    const m: Record<string, { emoji: string; name: string }> = {}
+    for (const c of categories) m[c.id] = { emoji: c.emoji, name: c.name }
+    return m
+  }, [categories])
 
-  const fetchTransactions = async () => {
-    try {
-      setLoading(true)
-      let query = supabase
-        .from('transactions')
-        .select('*')
-        .eq('user_id', user.id)
-        .order('date', { ascending: false })
-
-      if (filters.month) {
-        const [year, month] = filters.month.split('-')
-        const startDate = new Date(year, parseInt(month) - 1, 1).toISOString().split('T')[0]
-        const endDate = new Date(year, parseInt(month), 0).toISOString().split('T')[0]
-        query = query.gte('date', startDate).lte('date', endDate)
-      }
-
-      if (filters.category) {
-        query = query.eq('category_id', filters.category)
-      }
-
-      if (filters.type) {
-        query = query.eq('type', filters.type)
-      }
-
-      const { data } = await query
-      setTransactions(data || [])
-    } catch (error) {
-      console.error('Error fetching transactions:', error)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const handleDelete = async (id) => {
-    await supabase.from('transactions').delete().eq('id', id)
-    setDeleteConfirm(null)
-    fetchTransactions()
-  }
-
-  // Formatear moneda en colones costarricenses
-  const formatCurrency = (amount) => {
-    return new Intl.NumberFormat('es-CR', {
-      style: 'currency',
-      currency: 'CRC',
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 0,
-    }).format(amount)
-  }
-
-  const formatDate = (dateStr) => {
-    return new Date(dateStr).toLocaleDateString('es-CR', {
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric',
-    })
-  }
-
-  const getCategoryName = (categoryId) => {
-    const cat = categories.find(c => c.id === categoryId)
+  const getCategoryName = (categoryId: string) => {
+    const cat = categoryMap[categoryId]
     return cat ? `${cat.emoji} ${cat.name}` : '-'
   }
 
-  const totalPages = Math.ceil(transactions.length / itemsPerPage)
+  const totalPages = Math.max(1, Math.ceil(transactions.length / ITEMS_PER_PAGE))
   const paginatedTransactions = transactions.slice(
-    (currentPage - 1) * itemsPerPage,
-    currentPage * itemsPerPage
+    (currentPage - 1) * ITEMS_PER_PAGE,
+    currentPage * ITEMS_PER_PAGE
   )
 
-  const getMonthOptions = () => {
-    const options = []
-    const now = new Date()
-    for (let i = 0; i < 12; i++) {
-      const date = new Date(now.getFullYear(), now.getMonth() - i, 1)
-      options.push({
-        value: date.toISOString().slice(0, 7),
-        label: date.toLocaleDateString('es-CR', { month: 'long', year: 'numeric' }),
-      })
-    }
-    return options
+  const updateFilter = (patch: Partial<TransactionFilters>) => {
+    setFilters({ ...filters, ...patch })
+    setCurrentPage(1)
   }
 
   return (
@@ -127,24 +84,24 @@ export default function Transactions() {
             TRANSACTIONS
           </h1>
         </div>
-        <button
-          onClick={() => setModalOpen(true)}
-          className="btn-nothing shrink-0"
-        >
+        <button onClick={() => setModalOpen(true)} className="btn-nothing shrink-0">
           [+ ADD_ENTRY ]
         </button>
       </div>
 
-      <AIAssistant onSuccess={fetchTransactions} />
+      <AIAssistant onSuccess={invalidate.transactions} />
 
-      {/* Filters */}
+      {error && (
+        <p className="text-status-error font-mono text-xs">[ERROR: {(error as Error).message}]</p>
+      )}
+
       <div className="nothing-container p-4">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-8">
           <div>
             <label className="text-label block mb-2">MONTH_FILTER</label>
             <select
               value={filters.month}
-              onChange={(e) => setFilters({ ...filters, month: e.target.value })}
+              onChange={(e) => updateFilter({ month: e.target.value })}
               className="w-full bg-transparent border-b border-border-strong rounded-none px-0 py-2 text-text-primary focus:outline-none focus:border-text-display transition-all font-mono text-sm uppercase"
             >
               {getMonthOptions().map((opt) => (
@@ -157,7 +114,7 @@ export default function Transactions() {
             <label className="text-label block mb-2">CATEGORY_FILTER</label>
             <select
               value={filters.category}
-              onChange={(e) => setFilters({ ...filters, category: e.target.value })}
+              onChange={(e) => updateFilter({ category: e.target.value })}
               className="w-full bg-transparent border-b border-border-strong rounded-none px-0 py-2 text-text-primary focus:outline-none focus:border-text-display transition-all font-mono text-sm uppercase"
             >
               <option value="">Todas</option>
@@ -171,7 +128,7 @@ export default function Transactions() {
             <label className="text-label block mb-2">TYPE_FILTER</label>
             <select
               value={filters.type}
-              onChange={(e) => setFilters({ ...filters, type: e.target.value })}
+              onChange={(e) => updateFilter({ type: e.target.value as TransactionFilters['type'] })}
               className="w-full bg-transparent border-b border-border-strong rounded-none px-0 py-2 text-text-primary focus:outline-none focus:border-text-display transition-all font-mono text-sm uppercase"
             >
               <option value="">ALL</option>
@@ -182,7 +139,6 @@ export default function Transactions() {
         </div>
       </div>
 
-      {/* Table */}
       <div className="nothing-container p-0 overflow-hidden">
         {loading ? (
           <div className="flex items-center justify-center p-32">
@@ -212,18 +168,10 @@ export default function Transactions() {
                       key={t.id}
                       className="border-b border-border-strong hover:bg-base-200 transition-colors"
                     >
-                      <td className="py-4 px-6 text-text-disabled font-mono text-sm">
-                        {t.date}
-                      </td>
-                      <td className="py-4 px-6 text-text-primary text-sm font-medium">
-                        {t.description || '-'}
-                      </td>
-                      <td className="py-4 px-6 text-text-secondary text-sm">
-                        {getCategoryName(t.category_id)}
-                      </td>
-                      <td className="py-4 px-6 text-right font-mono text-sm">
-                        {formatCurrency(t.amount)}
-                      </td>
+                      <td className="py-4 px-6 text-text-disabled font-mono text-sm">{t.date}</td>
+                      <td className="py-4 px-6 text-text-primary text-sm font-medium">{t.description || '-'}</td>
+                      <td className="py-4 px-6 text-text-secondary text-sm">{getCategoryName(t.category_id)}</td>
+                      <td className="py-4 px-6 text-right font-mono text-sm">{formatCurrency(t.amount)}</td>
                       <td className="py-4 px-6 text-center">
                         <span className={`text-[10px] uppercase font-mono px-2 py-1 rounded-sm border ${
                           t.type === 'income' ? 'text-text-primary border-text-primary' : 'text-text-secondary border-text-secondary'
@@ -248,18 +196,18 @@ export default function Transactions() {
             {totalPages > 1 && (
               <div className="flex items-center justify-between p-6 bg-base-200 border-t border-border-strong">
                 <p className="text-label">
-                  VIEWING {(currentPage - 1) * itemsPerPage + 1} TO {Math.min(currentPage * itemsPerPage, transactions.length)} OF {transactions.length}
+                  VIEWING {(currentPage - 1) * ITEMS_PER_PAGE + 1} TO {Math.min(currentPage * ITEMS_PER_PAGE, transactions.length)} OF {transactions.length}
                 </p>
                 <div className="flex gap-4">
                   <button
-                    onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                    onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
                     disabled={currentPage === 1}
                     className="font-mono text-[10px] uppercase tracking-widest text-text-secondary hover:text-text-primary disabled:opacity-30 transition-colors"
                   >
                     ← PREV
                   </button>
                   <button
-                    onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                    onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
                     disabled={currentPage === totalPages}
                     className="font-mono text-[10px] uppercase tracking-widest text-text-secondary hover:text-text-primary disabled:opacity-30 transition-colors"
                   >
@@ -272,18 +220,19 @@ export default function Transactions() {
         )}
       </div>
 
-      {/* Add Transaction Modal */}
       <Modal isOpen={modalOpen} onClose={() => setModalOpen(false)} title="ENTRY.ADD">
         <TransactionForm
           onClose={() => setModalOpen(false)}
-          onSuccess={fetchTransactions}
+          onSuccess={invalidate.transactions}
         />
       </Modal>
 
-      {/* Delete Confirmation Modal */}
       <Modal isOpen={!!deleteConfirm} onClose={() => setDeleteConfirm(null)} title="ENTRY.DELETE">
         <div className="space-y-6 pt-4">
           <p className="text-text-primary text-sm">DESTUCTIVE OPERATION. TYPE: "DELETE". PROCEED?</p>
+          {deleteTx.error && (
+            <p className="text-status-error text-xs font-mono">[{(deleteTx.error as Error).message}]</p>
+          )}
           <div className="flex gap-4 border-t border-border-strong pt-6">
             <button
               onClick={() => setDeleteConfirm(null)}
@@ -292,10 +241,17 @@ export default function Transactions() {
               [ CANCEL ]
             </button>
             <button
-              onClick={() => handleDelete(deleteConfirm)}
-              className="btn-nothing-red flex-1"
+              onClick={() => {
+                if (deleteConfirm) {
+                  deleteTx.mutate(deleteConfirm, {
+                    onSuccess: () => setDeleteConfirm(null),
+                  })
+                }
+              }}
+              disabled={deleteTx.isPending}
+              className="btn-nothing-red flex-1 disabled:opacity-30"
             >
-              [ EXECUTE_DELETE ]
+              {deleteTx.isPending ? '[ DELETING... ]' : '[ EXECUTE_DELETE ]'}
             </button>
           </div>
         </div>

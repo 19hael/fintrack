@@ -1,6 +1,14 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../hooks/useAuth'
+import { categorySchema, formatZodError } from '../lib/schemas'
+import type { Category } from '../types'
+
+interface Props {
+  onClose: () => void
+  onSuccess: () => void
+  editCategory?: Category | null
+}
 
 const presetColors = [
   '#58A6FF', '#F85149', '#39D98A', '#A371F7', '#F78166',
@@ -9,9 +17,11 @@ const presetColors = [
 
 const presetEmojis = ['📁', '🍔', '🚗', '🏠', '💡', '📱', '✈️', '🎬', '🏥', '👕']
 
-export default function CategoryForm({ onClose, onSuccess, editCategory }) {
+export default function CategoryForm({ onClose, onSuccess, editCategory }: Props) {
   const { user } = useAuth()
   const [loading, setLoading] = useState(false)
+  const [errors, setErrors] = useState<Record<string, string>>({})
+  const [submitError, setSubmitError] = useState<string | null>(null)
   const [formData, setFormData] = useState({
     name: '',
     emoji: '📁',
@@ -30,48 +40,49 @@ export default function CategoryForm({ onClose, onSuccess, editCategory }) {
 
   const handleSubmit = async (e) => {
     e.preventDefault()
+    setErrors({})
+    setSubmitError(null)
+
+    const parsed = categorySchema.safeParse(formData)
+    if (!parsed.success) {
+      setErrors(formatZodError(parsed.error))
+      return
+    }
+
     setLoading(true)
-
     try {
-      const payload = {
-        user_id: user.id,
-        name: formData.name,
-        emoji: formData.emoji,
-        color: formData.color,
-      }
+      const payload = { user_id: user!.id, ...parsed.data }
 
-      if (editCategory?.id) {
-        await supabase
-          .from('categories')
-          .update(payload)
-          .eq('id', editCategory.id)
-      } else {
-        await supabase
-          .from('categories')
-          .insert(payload)
-      }
+      const { error } = editCategory?.id
+        ? await supabase.from('categories').update(payload).eq('id', editCategory.id)
+        : await supabase.from('categories').insert(payload)
+
+      if (error) throw error
 
       onSuccess?.()
       onClose?.()
     } catch (error) {
       console.error('Error saving category:', error)
+      setSubmitError(error.message || 'Error al guardar')
     } finally {
       setLoading(false)
     }
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-5">
+    <form onSubmit={handleSubmit} className="space-y-5" noValidate>
       <div>
         <label className="block text-text-secondary text-sm mb-2">Nombre</label>
         <input
           type="text"
+          maxLength={40}
           value={formData.name}
           onChange={(e) => setFormData({ ...formData, name: e.target.value })}
           className="w-full bg-bg-secondary border border-border-subtle rounded-lg px-4 py-3 text-text-primary focus:outline-none focus:border-accent-blue transition-all"
           placeholder="Ej: Alimentación"
-          required
+          aria-invalid={!!errors.name}
         />
+        {errors.name && <p className="text-status-error text-xs mt-2">{errors.name}</p>}
       </div>
 
       <div>
@@ -92,6 +103,7 @@ export default function CategoryForm({ onClose, onSuccess, editCategory }) {
             </button>
           ))}
         </div>
+        {errors.emoji && <p className="text-status-error text-xs mt-2">{errors.emoji}</p>}
       </div>
 
       <div>
@@ -109,7 +121,12 @@ export default function CategoryForm({ onClose, onSuccess, editCategory }) {
             />
           ))}
         </div>
+        {errors.color && <p className="text-status-error text-xs mt-2">{errors.color}</p>}
       </div>
+
+      {submitError && (
+        <p className="text-status-error text-sm">Error: {submitError}</p>
+      )}
 
       <div className="flex gap-3 pt-4">
         <button

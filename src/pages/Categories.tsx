@@ -1,8 +1,15 @@
-import { useState, useEffect } from 'react'
+import { useMemo, useState } from 'react'
+import { useMutation } from '@tanstack/react-query'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../hooks/useAuth'
 import Modal from '../components/Modal'
 import CategoryForm from '../components/CategoryForm'
+import {
+  useCategories,
+  useTransactions,
+  useDeleteCategory,
+  useInvalidate,
+} from '../hooks/queries'
 
 const DEFAULT_CATEGORIES = [
   { name: 'Alimentación', emoji: '🍔', color: '#F87171' },
@@ -19,72 +26,34 @@ const DEFAULT_CATEGORIES = [
 
 export default function Categories() {
   const { user } = useAuth()
-  const [loading, setLoading] = useState(true)
-  const [categories, setCategories] = useState([])
+  const categoriesQ = useCategories()
+  const transactionsQ = useTransactions()
+  const deleteCategory = useDeleteCategory()
+  const invalidate = useInvalidate()
+
   const [modalOpen, setModalOpen] = useState(false)
-  const [deleteConfirm, setDeleteConfirm] = useState(null)
-  const [addingDefaults, setAddingDefaults] = useState(false)
+  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
 
-  useEffect(() => {
-    fetchCategories()
-  }, [user])
-
-  const fetchCategories = async () => {
-    try {
-      setLoading(true)
-      const { data } = await supabase
-        .from('categories')
-        .select('*')
-        .eq('user_id', user.id)
-        .order('name')
-
-      // Get transaction counts for each category
-      const { data: transactionCounts } = await supabase
-        .from('transactions')
-        .select('category_id')
-        .eq('user_id', user.id)
-
-      const counts = {}
-      transactionCounts?.forEach(t => {
-        counts[t.category_id] = (counts[t.category_id] || 0) + 1
-      })
-
-      const categoriesWithCounts = data?.map(cat => ({
-        ...cat,
-        transactionCount: counts[cat.id] || 0,
-      })) || []
-
-      setCategories(categoriesWithCounts)
-    } catch (error) {
-      console.error('Error fetching categories:', error)
-    } finally {
-      setLoading(false)
+  const transactionCounts = useMemo(() => {
+    const counts: Record<string, number> = {}
+    for (const t of transactionsQ.data ?? []) {
+      if (t.category_id) counts[t.category_id] = (counts[t.category_id] || 0) + 1
     }
-  }
+    return counts
+  }, [transactionsQ.data])
 
-  const handleDelete = async (id) => {
-    await supabase.from('categories').delete().eq('id', id)
-    setDeleteConfirm(null)
-    fetchCategories()
-  }
+  const addDefaults = useMutation({
+    mutationFn: async () => {
+      const payload = DEFAULT_CATEGORIES.map((c) => ({ user_id: user!.id, ...c }))
+      const { error } = await supabase.from('categories').insert(payload)
+      if (error) throw error
+    },
+    onSuccess: () => invalidate.categories(),
+  })
 
-  const handleAddDefaults = async () => {
-    try {
-      setAddingDefaults(true)
-      const categoriesToInsert = DEFAULT_CATEGORIES.map(cat => ({
-        user_id: user.id,
-        name: cat.name,
-        emoji: cat.emoji,
-        color: cat.color,
-      }))
-      await supabase.from('categories').insert(categoriesToInsert)
-      fetchCategories()
-    } catch (error) {
-      console.error('Error adding default categories:', error)
-    } finally {
-      setAddingDefaults(false)
-    }
-  }
+  const loading = categoriesQ.isLoading
+  const categories = categoriesQ.data ?? []
+  const error = categoriesQ.error
 
   return (
     <div className="space-y-6">
@@ -98,6 +67,10 @@ export default function Categories() {
         </button>
       </div>
 
+      {error && (
+        <p className="text-status-error text-sm">Error: {(error as Error).message}</p>
+      )}
+
       {loading ? (
         <div className="flex items-center justify-center h-64">
           <div className="text-text-muted">Cargando...</div>
@@ -110,12 +83,15 @@ export default function Categories() {
           <p>No hay categorías</p>
           <p className="text-sm mt-1">Crea tu primera categoría</p>
           <button
-            onClick={handleAddDefaults}
-            disabled={addingDefaults}
+            onClick={() => addDefaults.mutate()}
+            disabled={addDefaults.isPending}
             className="mt-4 px-4 py-2 btn-primary rounded-xl disabled:opacity-50"
           >
-            {addingDefaults ? 'Agregando...' : 'Agregar categorías por defecto'}
+            {addDefaults.isPending ? 'Agregando...' : 'Agregar categorías por defecto'}
           </button>
+          {addDefaults.error && (
+            <p className="text-status-error text-xs mt-2">{(addDefaults.error as Error).message}</p>
+          )}
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -134,7 +110,7 @@ export default function Categories() {
                 <div className="flex-1 min-w-0">
                   <h3 className="font-medium text-text-primary truncate">{cat.name}</h3>
                   <p className="text-sm text-text-muted">
-                    {cat.transactionCount} {cat.transactionCount === 1 ? 'transacción' : 'transacciones'}
+                    {transactionCounts[cat.id] || 0} {(transactionCounts[cat.id] || 0) === 1 ? 'transacción' : 'transacciones'}
                   </p>
                 </div>
                 <button
@@ -151,15 +127,13 @@ export default function Categories() {
         </div>
       )}
 
-      {/* Add Category Modal */}
       <Modal isOpen={modalOpen} onClose={() => setModalOpen(false)} title="Nueva Categoría">
         <CategoryForm
           onClose={() => setModalOpen(false)}
-          onSuccess={fetchCategories}
+          onSuccess={invalidate.categories}
         />
       </Modal>
 
-      {/* Delete Confirmation Modal */}
       <Modal isOpen={!!deleteConfirm} onClose={() => setDeleteConfirm(null)} title="Eliminar Categoría">
         <div className="space-y-4">
           <p className="text-text-secondary">
@@ -168,6 +142,9 @@ export default function Categories() {
           <p className="text-text-muted text-sm">
             Las transacciones asociadas no se eliminarán, pero quedarán sin categoría.
           </p>
+          {deleteCategory.error && (
+            <p className="text-status-error text-xs">{(deleteCategory.error as Error).message}</p>
+          )}
           <div className="flex gap-3">
             <button
               onClick={() => setDeleteConfirm(null)}
@@ -176,10 +153,17 @@ export default function Categories() {
               Cancelar
             </button>
             <button
-              onClick={() => handleDelete(deleteConfirm)}
-              className="flex-1 py-3 bg-accent-expense text-white font-semibold rounded-lg hover:brightness-110 active:scale-[0.98] transition-all"
+              onClick={() => {
+                if (deleteConfirm) {
+                  deleteCategory.mutate(deleteConfirm, {
+                    onSuccess: () => setDeleteConfirm(null),
+                  })
+                }
+              }}
+              disabled={deleteCategory.isPending}
+              className="flex-1 py-3 bg-accent-expense text-white font-semibold rounded-lg hover:brightness-110 active:scale-[0.98] transition-all disabled:opacity-50"
             >
-              Eliminar
+              {deleteCategory.isPending ? 'Eliminando...' : 'Eliminar'}
             </button>
           </div>
         </div>
